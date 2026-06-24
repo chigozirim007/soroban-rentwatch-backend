@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────
+
+enum StorageType {
+  INSTANCE
+  PERSISTENT
+  CONTRACT_CODE
+}
+
+enum TrackingStatus {
+  HEALTHY
+  NEAR_EXPIRY
+  CRITICAL
+  ARCHIVED
+}
+
+enum KeyStatus {
+  ACTIVE
+  DEPRECATED
+  RETIRED
+}
+
+// ─── Models ──────────────────────────────────────────────────
+
+/// Protocol teams / developer accounts
+model User {
+  id          String         @id @default(uuid()) @db.Uuid
+  publicKey   String         @unique @map("public_key") @db.VarChar(56)
+  depositMemo String         @unique @map("deposit_memo") @db.VarChar(64)
+  webhookUrl  String?        @map("webhook_url")
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  balancePool BalancePool?
+  keys        MonitoredKey[]
+  txLogs      TransactionLog[]
+  deposits    DepositLog[]
+
+  @@map("users")
+}
+
+/// Virtual XLM gas reserve per user — funds automated rent extensions
+model BalancePool {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @unique @map("user_id") @db.Uuid
+  xlmBalance Decimal  @default(0) @map("xlm_balance") @db.Decimal(20, 7)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("balance_pools")
+}
+
+/// Individual Soroban ledger keys being tracked for TTL expiry
+model MonitoredKey {
+  id                String         @id @default(uuid()) @db.Uuid
+  userId            String         @map("user_id") @db.Uuid
+  contractId        String         @map("contract_id") @db.VarChar(56)
+  targetKeyXdr      String         @map("target_key_xdr")
+  storageKind       StorageType    @map("storage_kind")
+  thresholdLedgers  Int            @default(15000) @map("threshold_ledgers")
+  extendToLedgers   Int            @default(100000) @map("extend_to_ledgers")
+  status            TrackingStatus @default(HEALTHY)
+  lastCheckedLedger Int?           @map("last_checked_ledger")
+  liveUntilLedger   Int?           @map("live_until_ledger")
+  updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  txLogs            TransactionLog[]
+
+  @@unique([userId, contractId, targetKeyXdr])
+  @@index([status])
+  @@index([userId])
+  @@map("monitored_keys")
+}
+
+/// Audit log of every relay transaction (extension attempt)
+model TransactionLog {
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  monitoredKeyId String       @map("monitored_key_id") @db.Uuid
+  txHash         String       @map("tx_hash")
+  signingKeyId   String?      @map("signing_key_id") @db.Uuid
+  status         String
+  xlmCost        Decimal?     @map("xlm_cost") @db.Decimal(20, 7)
+  extendedTo     Int?         @map("extended_to")
+  errorMessage   String?      @map("error_message")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monitoredKey   MonitoredKey @relation(fields: [monitoredKeyId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("transaction_logs")
+}
+
+/// Audit log of every incoming XLM deposit
+model DepositLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  txHash        String   @unique @map("tx_hash")
+  amount        Decimal  @db.Decimal(20, 7)
+  memo          String
+  sourceAccount String   @map("source_account") @db.VarChar(56)
+  ledgerSeq     Int      @map("ledger_seq")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("deposit_logs")
+}
+
+/// Relayer signing keys — encrypted at rest, supports rotation lifecycle
+model RelayerKey {
+  id              String    @id @default(uuid()) @db.Uuid
+  publicKey       String    @unique @map("public_key") @db.VarChar(56)
+  encryptedSecret String    @map("encrypted_secret")
+  iv              String
+  authTag         String    @map("auth_tag")
+  keyVersion      Int       @map("key_version")
+  status          KeyStatus @default(ACTIVE)
+  lastUsedAt      DateTime? @map("last_used_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([status])
+  @@map("relayer_keys")
+}
