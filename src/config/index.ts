@@ -1,8 +1,8 @@
 import dotenv from "dotenv";
 import path from "path";
 
-// Load .env from the project root (one level above backend/)
-dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+// Load .env from the repository root.
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
 // ─── Helpers ─────────────────────────────────────────────────
 
