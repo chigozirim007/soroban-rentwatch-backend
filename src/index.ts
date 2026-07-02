@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { StrKey } from "@stellar/stellar-sdk";
 import { config } from "./config/index.js";
 import { getPrisma, disconnectPrisma } from "./database/client.js";
 import { connectRedis, disconnectRedis } from "./database/redis.js";
@@ -7,6 +8,7 @@ import { runIndexerCycle } from "./indexer/worker.js";
 import { setQueueProcessor, getQueueDepth } from "./relayer/queue.js";
 import { processExtension } from "./relayer/engine.js";
 import { startDepositWatcher, stopDepositWatcher } from "./deposit/watcher.js";
+import { startHealthServer } from "./health/server.js";
 import { logger } from "./utils/logger.js";
 
 // ─── Main Entry Point ────────────────────────────────────────
@@ -51,17 +53,28 @@ async function main(): Promise<void> {
   logger.info("Relayer queue processor active");
 
   // ── 5. Start Deposit Watcher ─────────────────────────────
-  try {
-    await startDepositWatcher();
-  } catch (err) {
-    logger.error(err, "Failed to start deposit watcher — deposits will not be auto-detected");
+  const depositKey = config.deposit.accountPublic;
+  const isValidDepositKey = StrKey.isValidEd25519PublicKey(depositKey);
+
+  if (!isValidDepositKey) {
+    logger.warn(
+      { depositAccount: depositKey },
+      "⚠️  DEPOSIT_ACCOUNT_PUBLIC is missing or invalid — deposit watcher skipped",
+    );
+    logger.warn("   Set a valid Stellar public key in your .env to enable deposit detection.");
+  } else {
+    try {
+      await startDepositWatcher();
+    } catch (err) {
+      logger.error(err, "Failed to start deposit watcher — deposits will not be auto-detected");
+    }
   }
 
-  // ── 6. Start Indexer Cron ────────────────────────────────
-  const intervalSeconds = Math.max(Math.ceil(config.indexer.intervalMs / 1000), 1);
+  // ── 6. Start Health Server ──────────────────────────────
+  startHealthServer();
 
-  // Convert to cron expression: every N seconds
-  // node-cron supports seconds as 6-field cron
+  // ── 7. Start Indexer Cron ────────────────────────────────
+  const intervalSeconds = Math.max(Math.ceil(config.indexer.intervalMs / 1000), 1);
   const cronExpr = `*/${intervalSeconds} * * * * *`;
 
   _cronTask = cron.schedule(cronExpr, async () => {
