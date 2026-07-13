@@ -1,87 +1,94 @@
+import { Queue, Worker, Job } from "bullmq";
+import { getRedis } from "../database/redis.js";
 import { logger } from "../utils/logger.js";
+import { config } from "../config/index.js";
 
-// ─── Relay Queue ─────────────────────────────────────────────
+// ─── Relay Queue (BullMQ) ────────────────────────────────────
 //
-// FIFO queue for TTL extension jobs. Sequential processing per
-// relayer key prevents sequence number conflicts from parallel
-// submissions on the same Stellar account.
-//
-// Deduplication: if a keyId is already queued, skip it.
+// Reliable Redis-backed queue for TTL extension jobs.
+// Supports concurrency, automatic retries with exponential 
+// backoff, and state persistence.
 // ─────────────────────────────────────────────────────────────
 
 type QueueProcessor = (keyId: string) => Promise<void>;
 
-const _queue: string[] = [];
-const _queued = new Set<string>();
-let _processing = false;
-let _processor: QueueProcessor | null = null;
+const QUEUE_NAME = "relayer-queue";
+let relayQueue: Queue | null = null;
+let relayWorker: Worker | null = null;
 
 /**
- * Set the function that processes each queued key ID.
+ * Initialize the BullMQ queue and worker.
  * Called once during system startup.
  */
 export function setQueueProcessor(processor: QueueProcessor): void {
-  _processor = processor;
+  const connection = getRedis();
+
+  relayQueue = new Queue(QUEUE_NAME, {
+    connection: connection as any,
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: "exponential",
+        delay: 5000,
+      },
+      removeOnComplete: true,
+      removeOnFail: false, // Keep failed jobs for inspection
+    },
+  });
+
+  relayWorker = new Worker(
+    QUEUE_NAME,
+    async (job: Job) => {
+      const { keyId } = job.data;
+      await processor(keyId);
+    },
+    {
+      connection: connection as any,
+      concurrency: config.relayer.queueConcurrency ?? 3,
+    }
+  );
+
+  relayWorker.on("completed", (job) => {
+    logger.debug({ jobId: job.id, keyId: job.data.keyId }, "Relay job completed");
+  });
+
+  relayWorker.on("failed", (job, err) => {
+    logger.error({ jobId: job?.id, keyId: job?.data?.keyId, error: err }, "Relay job failed");
+  });
+
+  logger.info({ concurrency: config.relayer.queueConcurrency ?? 3 }, "BullMQ relayer queue initialized");
 }
 
 /**
  * Add a monitored key ID to the relay queue.
- * Deduplicates — if already queued, this is a no-op.
+ * BullMQ handles deduplication if jobId is provided, but since we 
+ * might want to retry later, we just enqueue it. The indexer handles 
+ * rate-limiting enqueues.
  */
-export function enqueueExtension(keyId: string): void {
-  if (_queued.has(keyId)) {
-    logger.debug({ keyId }, "Key already in relay queue, skipping");
+export async function enqueueExtension(keyId: string): Promise<void> {
+  if (!relayQueue) {
+    logger.warn("Relay queue not initialized, cannot enqueue");
     return;
   }
 
-  _queue.push(keyId);
-  _queued.add(keyId);
-  logger.info({ keyId, queueDepth: _queue.length }, "Key enqueued for TTL extension");
-
-  if (_queue.length > 50) {
-    logger.warn({ queueDepth: _queue.length }, "Relay queue depth is high — system may be falling behind");
-  }
-
-  // Start processing if not already running
-  processQueue();
-}
-
-/**
- * Process the queue sequentially.
- */
-async function processQueue(): Promise<void> {
-  if (_processing) return;
-  if (!_processor) {
-    logger.error("Queue processor not set — call setQueueProcessor() first");
-    return;
-  }
-
-  _processing = true;
-
-  while (_queue.length > 0) {
-    const keyId = _queue.shift()!;
-    _queued.delete(keyId);
-
-    try {
-      await _processor(keyId);
-    } catch (err) {
-      logger.error({ keyId, error: err }, "Queue processor failed for key");
-    }
-  }
-
-  _processing = false;
+  // Use the keyId as jobId to prevent multiple instances of the exact same key being enqueued simultaneously
+  await relayQueue.add("extend", { keyId }, { jobId: keyId });
+  logger.info({ keyId }, "Key enqueued for TTL extension (BullMQ)");
 }
 
 /**
  * Get current queue depth (for monitoring/health checks).
  */
-export function getQueueDepth(): number {
-  return _queue.length;
+export async function getQueueDepth(): Promise<number> {
+  if (!relayQueue) return 0;
+  return await relayQueue.count();
 }
 
 /**
- * Check if the queue is currently processing.
+ * Stop the queue worker gracefully.
  */
-export function isProcessing(): boolean {
-  return _processing;
+export async function stopQueue(): Promise<void> {
+  if (relayWorker) {
+    await relayWorker.close();
+  }
 }

@@ -70,11 +70,23 @@ async function processPayment(
   record: Horizon.ServerApi.PaymentOperationRecord | Horizon.ServerApi.CreateAccountOperationRecord | Horizon.ServerApi.AccountMergeOperationRecord | Horizon.ServerApi.PathPaymentOperationRecord | Horizon.ServerApi.PathPaymentStrictSendOperationRecord | Horizon.ServerApi.InvokeHostFunctionOperationRecord,
   depositAccount: string,
 ): Promise<void> {
-  // Only process standard 'payment' type operations
-  if (record.type !== "payment") return;
-  const payment = record as Horizon.ServerApi.PaymentOperationRecord;
+  // Only process payment and path payment types
+  if (!["payment", "path_payment_strict_receive", "path_payment_strict_send"].includes(record.type)) {
+    return;
+  }
+
+  const payment = record as any;
   if (payment.to !== depositAccount) return;
   if (payment.asset_type !== "native") return;
+
+  const amount = parseFloat(payment.amount);
+  
+  // Filter out dust to prevent rate-limit spam
+  if (amount < 0.5) {
+    logger.debug({ paymentId: payment.id, amount }, "Payment below 0.5 XLM threshold, ignoring");
+    await saveCursor(payment.paging_token);
+    return;
+  }
 
   const prisma = getPrisma();
 
@@ -109,8 +121,6 @@ async function processPayment(
     await saveCursor(payment.paging_token);
     return;
   }
-
-  const amount = parseFloat(payment.amount);
 
   // Credit balance + log deposit atomically
   await prisma.$transaction([

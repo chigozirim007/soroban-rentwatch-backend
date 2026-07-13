@@ -5,7 +5,7 @@ import { getPrisma, disconnectPrisma } from "./database/client.js";
 import { connectRedis, disconnectRedis } from "./database/redis.js";
 import { getActiveKeyCount } from "./keys/manager.js";
 import { runIndexerCycle } from "./indexer/worker.js";
-import { setQueueProcessor, getQueueDepth } from "./relayer/queue.js";
+import { setQueueProcessor, stopQueue } from "./relayer/queue.js";
 import { processExtension } from "./relayer/engine.js";
 import { startDepositWatcher, stopDepositWatcher } from "./deposit/watcher.js";
 import { startHealthServer } from "./health/server.js";
@@ -113,11 +113,10 @@ async function main(): Promise<void> {
 
     stopDepositWatcher();
 
-    // Wait for relay queue to drain (with timeout)
-    const drainStart = Date.now();
-    while (getQueueDepth() > 0 && Date.now() - drainStart < 10_000) {
-      logger.info({ queueDepth: getQueueDepth() }, "Draining relay queue...");
-      await new Promise((r) => setTimeout(r, 1000));
+    // ── 4. Shutdown relayer queue gracefully
+    if (stopQueue) {
+      logger.info("Closing relayer queue...");
+      await stopQueue();
     }
 
     await disconnectRedis();

@@ -349,11 +349,12 @@ async function fundPool(args: string[]): Promise<void> {
 async function systemStatus(): Promise<void> {
   const prisma = getPrisma();
 
-  const [userCount, keyCount, activeKeyCount, txCount] = await Promise.all([
+  const [userCount, keyCount, activeKeyCount, txCount, queueDepth] = await Promise.all([
     prisma.user.count(),
     prisma.monitoredKey.count(),
     getActiveKeyCount(),
     prisma.transactionLog.count(),
+    getQueueDepth(),
   ]);
 
   const statusCounts = await prisma.monitoredKey.groupBy({
@@ -365,7 +366,7 @@ async function systemStatus(): Promise<void> {
   console.log(`   Users:          ${userCount}`);
   console.log(`   Monitored Keys: ${keyCount}`);
   console.log(`   Relayer Keys:   ${activeKeyCount} active`);
-  console.log(`   Relay Queue:    ${getQueueDepth()} pending`);
+  console.log(`   Relay Queue:    ${queueDepth} pending`);
   console.log(`   Total Txns:     ${txCount}`);
   console.log();
 

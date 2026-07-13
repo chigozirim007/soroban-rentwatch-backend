@@ -29,7 +29,7 @@ export function startHealthServer(): void {
     try {
       const prisma = getPrisma();
 
-      const [userCount, monitoredCount, activeRelayerKeys, txCount, statusCounts] =
+      const [userCount, monitoredCount, activeRelayerKeys, txCount, statusCounts, queueDepth] =
         await Promise.all([
           prisma.user.count(),
           prisma.monitoredKey.count({ where: { status: { not: "ARCHIVED" } } }),
@@ -39,6 +39,7 @@ export function startHealthServer(): void {
             by: ["status"],
             _count: { status: true },
           }),
+          getQueueDepth(),
         ]);
 
       const statusBreakdown: Record<string, number> = {};
@@ -52,7 +53,7 @@ export function startHealthServer(): void {
         network: config.stellar.networkPassphrase,
         depositAccount: config.deposit.accountPublic,
         relayerKeys: activeRelayerKeys,
-        queueDepth: getQueueDepth(),
+        queueDepth,
         stats: {
           users: userCount,
           monitoredKeys: monitoredCount,

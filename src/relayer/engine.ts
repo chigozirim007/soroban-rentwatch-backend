@@ -178,30 +178,38 @@ export async function processExtension(monitoredKeyId: string): Promise<void> {
         "✅ TTL extension successful",
       );
 
-      // Deduct fee from user balance (atomic transaction)
-      await prisma.$transaction([
-        prisma.balancePool.update({
+      // Deduct fee from user balance (atomic interactive transaction)
+      await prisma.$transaction(async (tx) => {
+        const pool = await tx.balancePool.findUnique({ where: { userId } });
+        const feeNum = parseFloat(feeXlm);
+        if (!pool || Number(pool.xlmBalance) < feeNum) {
+          throw new Error(`Insufficient balance to cover fee (${feeXlm} XLM)`);
+        }
+
+        await tx.balancePool.update({
           where: { userId },
           data: {
-            xlmBalance: { decrement: parseFloat(feeXlm) },
+            xlmBalance: { decrement: feeNum },
           },
-        }),
-        prisma.monitoredKey.update({
+        });
+
+        await tx.monitoredKey.update({
           where: { id: monitoredKeyId },
           data: { status: "HEALTHY" },
-        }),
-        prisma.transactionLog.create({
+        });
+
+        await tx.transactionLog.create({
           data: {
             userId,
             monitoredKeyId,
             txHash: sendResponse.hash,
             signingKeyId,
             status: "SUCCESS",
-            xlmCost: parseFloat(feeXlm),
+            xlmCost: feeNum,
             extendedTo: keyRecord.extendToLedgers,
           },
-        }),
-      ]);
+        });
+      });
 
       await sendNotification(userId, {
         event: NotificationEvent.EXTENSION_SUCCESS,

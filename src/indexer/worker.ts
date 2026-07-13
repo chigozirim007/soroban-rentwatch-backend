@@ -163,7 +163,24 @@ async function processBatch(
     });
 
     // Track status transitions
-    if (isStatusTransition(dbKey.status, newStatus)) {
+    const isTransition = isStatusTransition(dbKey.status, newStatus);
+    let shouldEnqueue = isTransition;
+
+    if (!isTransition && dbKey.status === "CRITICAL" && newStatus === "CRITICAL") {
+      // Re-enqueue CRITICAL keys if 15 minutes have passed since last enqueue
+      const redis = await import("../database/redis.js").then((m) => m.getRedis());
+      const lastEnqueued = await redis.get(`enqueued:${dbKey.id}`);
+      if (!lastEnqueued) {
+        shouldEnqueue = true;
+      }
+    }
+
+    if (shouldEnqueue) {
+      if (newStatus === "CRITICAL") {
+        const redis = await import("../database/redis.js").then((m) => m.getRedis());
+        await redis.set(`enqueued:${dbKey.id}`, "1", "EX", 15 * 60); // 15 minute cooldown
+      }
+
       transitions.push({
         key: dbKey,
         oldStatus: dbKey.status,
