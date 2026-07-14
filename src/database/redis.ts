@@ -39,11 +39,40 @@ export async function connectRedis(): Promise<void> {
   await redis.connect();
 }
 
+// ─── BullMQ-Compatible Redis Connection ──────────────────────
+// BullMQ requires maxRetriesPerRequest: null. We keep a separate
+// connection so normal Redis caching operations are unaffected.
+
+let _bullmqRedis: Redis | null = null;
+
+export function getBullMQRedis(): Redis {
+  if (!_bullmqRedis) {
+    _bullmqRedis = new Redis(config.redis.url, {
+      maxRetriesPerRequest: null,
+      retryStrategy(times: number) {
+        const delay = Math.min(times * 200, 5000);
+        logger.warn({ attempt: times, delayMs: delay }, "BullMQ Redis reconnecting");
+        return delay;
+      },
+      lazyConnect: true,
+    });
+
+    _bullmqRedis.on("error", (err) => logger.error(err, "BullMQ Redis error"));
+  }
+
+  return _bullmqRedis;
+}
+
 export async function disconnectRedis(): Promise<void> {
   if (_redis) {
     await _redis.quit();
     _redis = null;
     logger.info("Redis connection closed");
+  }
+  if (_bullmqRedis) {
+    await _bullmqRedis.quit();
+    _bullmqRedis = null;
+    logger.info("BullMQ Redis connection closed");
   }
 }
 

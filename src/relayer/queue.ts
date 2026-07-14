@@ -1,5 +1,5 @@
 import { Queue, Worker, Job } from "bullmq";
-import { getRedis } from "../database/redis.js";
+import { getBullMQRedis } from "../database/redis.js";
 import { logger } from "../utils/logger.js";
 import { config } from "../config/index.js";
 
@@ -21,7 +21,7 @@ let relayWorker: Worker | null = null;
  * Called once during system startup.
  */
 export function setQueueProcessor(processor: QueueProcessor): void {
-  const connection = getRedis();
+  const connection = getBullMQRedis();
 
   relayQueue = new Queue(QUEUE_NAME, {
     connection: connection as any,
