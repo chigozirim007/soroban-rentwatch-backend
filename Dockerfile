@@ -26,5 +26,5 @@ COPY --from=builder --chown=rentwatch:nodejs /app/package.json ./
 
 USER rentwatch
 
-# Run Prisma migrations then start worker
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# Sync database schema then start worker
+CMD ["sh", "-c", "npx prisma db push --skip-generate && node dist/index.js"]
